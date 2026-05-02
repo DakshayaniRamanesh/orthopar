@@ -17,6 +17,7 @@ function Dashboard({ onAnalyze }) {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState("");
   const [uploadError, setUploadError] = useState("");
+  const [uploadMode, setUploadMode] = useState("new"); // "new" or "overwrite"
 
   // --- Data Fetching ---
   // Load patients immediately on mount to populate the dropdown
@@ -55,10 +56,10 @@ function Dashboard({ onAnalyze }) {
     if (!selectedPatientId) return setUploadError("Please select a patient first.");
     if (!selectedVisitId) return setUploadError("Please select a visit or create a new one.");
     if (!scans.upper || !scans.lower || !scans.buccal) return setUploadError("Please select all 3 scans.");
-    
+
     setUploading(true);
     setUploadError("");
-    
+
     try {
       setUploadProgress("Aligning medical visit routing context...");
       
@@ -89,21 +90,21 @@ function Dashboard({ onAnalyze }) {
       // Sequentially upload each model segment to the selected visit bucket
       setUploadProgress("Uploading Upper Arch...");
       await uploadScan(targetVisitId, "Upper Arch Segment", scans.upper);
-      
+
       setUploadProgress("Uploading Lower Arch...");
       await uploadScan(targetVisitId, "Lower Arch Segment", scans.lower);
-      
+
       setUploadProgress("Uploading Buccal Segment...");
       await uploadScan(targetVisitId, "Buccal Segment", scans.buccal);
-      
+
       setUploadProgress("Success! Starting Analysis...");
-      
+
       // Delay briefly to show success, then jump straight into Analysis Studio
       setTimeout(() => {
         setUploading(false);
-        onAnalyze(selectedPatientId); 
+        onAnalyze(selectedPatientId);
       }, 800);
-      
+
     } catch (err) {
       setUploadError(err.message);
       setUploading(false);
@@ -112,7 +113,7 @@ function Dashboard({ onAnalyze }) {
 
   // Filter logic for recent activity table
   const filtered = patients.filter(p =>
-    p.id.toLowerCase().includes(search.toLowerCase()) || 
+    p.id.toLowerCase().includes(search.toLowerCase()) ||
     p.name.toLowerCase().includes(search.toLowerCase())
   );
 
@@ -123,7 +124,7 @@ function Dashboard({ onAnalyze }) {
         <div className="section-header">
           <div className="section-title">New Scan Analysis</div>
         </div>
-        
+
         {/* Step 1: Patient Selection Box */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
           <div className="dashboard-section-wrap">
@@ -169,7 +170,7 @@ function Dashboard({ onAnalyze }) {
           <label className="dashboard-label">
             3. Upload 3D Intraoral Scans
           </label>
-          
+
           <div className="scan-picker-list">
             {[
               { id: 'upper', label: "Upper Arch" },
@@ -179,12 +180,12 @@ function Dashboard({ onAnalyze }) {
               <div key={scan.id} className="scan-picker-item">
                 <label className={`btn-secondary scan-picker-btn ${uploading ? "disabled" : ""}`}>
                   Select File
-                  <input 
-                    type="file" 
-                    accept=".stl,.obj,.ply" 
+                  <input
+                    type="file"
+                    accept=".stl,.obj,.ply"
                     style={{ display: "none" }}
                     disabled={uploading}
-                    onChange={(e) => { if(e.target.files[0]) handleFileChange(scan.id, e.target.files[0]) }}
+                    onChange={(e) => { if (e.target.files[0]) handleFileChange(scan.id, e.target.files[0]) }}
                   />
                 </label>
                 <div className={`scan-picker-status ${scans[scan.id] ? "selected" : ""}`}>
@@ -209,8 +210,8 @@ function Dashboard({ onAnalyze }) {
           </div>
         )}
 
-        <button 
-          className="analyze-btn dashboard-analyze-btn" 
+        <button
+          className="analyze-btn dashboard-analyze-btn"
           disabled={!selectedPatientId || !scans.upper || !scans.lower || !scans.buccal || uploading}
           onClick={handleUploadAndAnalyze}
         >
@@ -242,7 +243,7 @@ function Dashboard({ onAnalyze }) {
             text: isCompleted ? C.green : isPending ? C.amber : C.blue,
             dot: isCompleted ? C.green : isPending ? C.amber : C.blue
           };
-          
+
           return (
             <div key={p.id} className="table-row" onClick={onAnalyze}>
               <div className="patient-id">{p.id}</div>
