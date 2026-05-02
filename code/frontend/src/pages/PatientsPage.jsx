@@ -126,28 +126,6 @@ function VisitHistoryPanel({ patient, onAnalyzeVisit, onAddVisit, onViewReport }
         <div style={{ fontSize: 12, color: C.textSub }}>
           Total of {visits.length} visit{visits.length !== 1 ? 's' : ''} recorded.
         </div>
-        <button
-          onClick={() => onViewReport && onViewReport(patient.id, "trend")}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-            fontSize: 12,
-            fontWeight: 700,
-            padding: "6px 14px",
-            borderRadius: 8,
-            border: "none",
-            background: "linear-gradient(135deg, #6366F1 0%, #4F46E5 100%)",
-            color: "white",
-            cursor: "pointer",
-            boxShadow: "0 2px 4px rgba(79, 70, 229, 0.2)",
-            transition: "transform 0.1s, box-shadow 0.1s",
-          }}
-          onMouseDown={e => e.currentTarget.style.transform = "scale(0.98)"}
-          onMouseUp={e => e.currentTarget.style.transform = "scale(1)"}
-        >
-          <ReportIcon /> View Detailed Trend Report
-        </button>
       </div>
     </div>
   );
