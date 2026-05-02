@@ -15,7 +15,7 @@ const ReportIcon = () => (
   </svg>
 );
 
-function VisitHistoryPanel({ patient, onAnalyzeVisit }) {
+function VisitHistoryPanel({ patient, onAnalyzeVisit, onAddVisit, onViewReport }) {
   const visits = patient?.visits || [];
 
   if (visits.length === 0) {
@@ -28,6 +28,17 @@ function VisitHistoryPanel({ patient, onAnalyzeVisit }) {
 
   return (
     <div style={{ borderBottom: `1px solid ${C.border}`, background: "#FAFBFD" }}>
+      {/* Fix 2: Add Visit Button */}
+      <div style={{ padding: "12px 20px 12px 56px", background: "white", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "flex-end" }}>
+        <button 
+          className="btn-secondary" 
+          onClick={() => onAddVisit && onAddVisit(patient.id)}
+          style={{ fontSize: 12, padding: "6px 14px", display: "flex", alignItems: "center", gap: 6, flex: "none", width: "auto" }}
+        >
+          {Icons.plus} Add Progress Visit
+        </button>
+      </div>
+
       {/* Header row */}
       <div style={{
         display: "grid",
@@ -115,28 +126,6 @@ function VisitHistoryPanel({ patient, onAnalyzeVisit }) {
         <div style={{ fontSize: 12, color: C.textSub }}>
           Total of {visits.length} visit{visits.length !== 1 ? 's' : ''} recorded.
         </div>
-        <button
-          onClick={() => onViewReport && onViewReport(patient.id)}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-            fontSize: 12,
-            fontWeight: 700,
-            padding: "6px 14px",
-            borderRadius: 8,
-            border: "none",
-            background: "linear-gradient(135deg, #6366F1 0%, #4F46E5 100%)",
-            color: "white",
-            cursor: "pointer",
-            boxShadow: "0 2px 4px rgba(79, 70, 229, 0.2)",
-            transition: "transform 0.1s, box-shadow 0.1s",
-          }}
-          onMouseDown={e => e.currentTarget.style.transform = "scale(0.98)"}
-          onMouseUp={e => e.currentTarget.style.transform = "scale(1)"}
-        >
-          <ReportIcon /> View Detailed Trend Report
-        </button>
       </div>
     </div>
   );
@@ -161,6 +150,12 @@ function PatientsPage({ onAnalyze, onViewReport }) {
   const [newGender, setNewGender] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+
+  // Fix 2: Visit Modal State
+  const [showVisitModal, setShowVisitModal] = useState(false);
+  const [targetPatientId, setTargetPatientId] = useState(null);
+  const [visitStatus, setVisitStatus] = useState("Mid-Treatment");
+  const [visitNotes, setVisitNotes] = useState("");
 
   const fetchPatients = async () => {
     try {
@@ -212,6 +207,27 @@ function PatientsPage({ onAnalyze, onViewReport }) {
 
       setShowModal(false);
       setNewName(""); setNewStatus("Active"); setNewMRN(""); setNewDOB(""); setNewGender("");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Fix 2: Visit creation handler
+  const handleAddVisit = async (e) => {
+    if (e) e.preventDefault();
+    setSubmitting(true);
+    try {
+      await createVisit(targetPatientId, visitNotes, visitStatus);
+      
+      // Refresh the expanded patient data
+      const full = await getPatient(targetPatientId);
+      setExpandedData(prev => ({ ...prev, [targetPatientId]: full }));
+      
+      setShowVisitModal(false);
+      setVisitNotes("");
+      setVisitStatus("Mid-Treatment");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -306,7 +322,7 @@ function PatientsPage({ onAnalyze, onViewReport }) {
                       <div onClick={e => e.stopPropagation()} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <button
                           title="View Patient Report"
-                          onClick={() => onViewReport && onViewReport(p.id)}
+                          onClick={() => onViewReport && onViewReport(p.id, "single")}
                           style={{
                             display: "inline-flex",
                             alignItems: "center",
@@ -340,6 +356,8 @@ function PatientsPage({ onAnalyze, onViewReport }) {
                         <VisitHistoryPanel
                           patient={fullPatient || p}
                           onAnalyzeVisit={(id) => { if (onAnalyze) onAnalyze(id); }}
+                          onAddVisit={(id) => { setTargetPatientId(id); setShowVisitModal(true); }}
+                          onViewReport={onViewReport}
                         />
                       )
                     )}
@@ -407,6 +425,51 @@ function PatientsPage({ onAnalyze, onViewReport }) {
                   <button type="button" className="modal-btn modal-btn-cancel" onClick={() => setShowModal(false)} disabled={submitting}>Cancel</button>
                   <button type="submit" className="modal-btn modal-btn-save" disabled={submitting || !newName.trim()}>
                     {submitting ? "Saving…" : "Create Patient"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Fix 2: Visit creation modal */}
+        {showVisitModal && (
+          <div className="modal-overlay">
+            <div className="modal">
+              <div className="modal-title">Record New Visit</div>
+              <div style={{ fontSize: 13, color: C.textSub, marginBottom: 20 }}>
+                Adding a new visit allows you to track treatment progress over time.
+              </div>
+
+              <form onSubmit={handleAddVisit}>
+                <div className="modal-body">
+                  <div className="form-group">
+                    <label className="form-label">Visit Type / Status</label>
+                    <select className="form-select" value={visitStatus} onChange={e => setVisitStatus(e.target.value)}>
+                      <option value="Pre-Treatment">Pre-Treatment (Baseline)</option>
+                      <option value="Mid-Treatment">Mid-Treatment (Progress)</option>
+                      <option value="Post-Treatment">Post-Treatment (Outcome)</option>
+                    </select>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Clinical Notes</label>
+                    <textarea 
+                      className="form-input" 
+                      style={{ height: 80, resize: "none", padding: 10 }}
+                      placeholder="e.g. Patient is wearing aligners well, noticeable movement in upper arch..."
+                      value={visitNotes}
+                      onChange={e => setVisitNotes(e.target.value)}
+                    />
+                  </div>
+
+                  {error && <div style={{ fontSize: 12, color: C.red, marginTop: 8 }}>{error}</div>}
+                </div>
+
+                <div className="modal-actions">
+                  <button type="button" className="modal-btn modal-btn-cancel" onClick={() => setShowVisitModal(false)} disabled={submitting}>Cancel</button>
+                  <button type="submit" className="modal-btn modal-btn-save" disabled={submitting}>
+                    {submitting ? "Creating…" : "Create Visit Record"}
                   </button>
                 </div>
               </form>

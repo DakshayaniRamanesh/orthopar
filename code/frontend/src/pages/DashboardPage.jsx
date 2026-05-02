@@ -11,6 +11,8 @@ function Dashboard({ onAnalyze }) {
 
   // Upload Flow State
   const [selectedPatientId, setSelectedPatientId] = useState("");
+  const [selectedVisitId, setSelectedVisitId] = useState(""); // Fix 1: Track specific visit
+  const [patientVisits, setPatientVisits] = useState([]);   // Fix 1: Local cache of visits
   const [scans, setScans] = useState({ upper: null, lower: null, buccal: null });
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState("");
@@ -26,6 +28,23 @@ function Dashboard({ onAnalyze }) {
       .finally(() => setLoading(false));
   }, []);
 
+  // Fix 1: Load visits when patient is selected
+  useEffect(() => {
+    if (!selectedPatientId) {
+      setPatientVisits([]);
+      setSelectedVisitId("");
+      return;
+    }
+    getPatient(selectedPatientId)
+      .then(p => {
+        const visits = p.visits || [];
+        setPatientVisits(visits);
+        // If no visits exist, default to "new". Otherwise, let user choose.
+        setSelectedVisitId(visits.length === 0 ? "new" : visits[visits.length - 1].id);
+      })
+      .catch(err => setUploadError("Failed to load patient visits: " + err.message));
+  }, [selectedPatientId]);
+
   // --- Handlers ---
   // Update state when a new file is picked for a specific jaw segment
   const handleFileChange = (type, file) => {
@@ -35,6 +54,7 @@ function Dashboard({ onAnalyze }) {
   // Validate and orchestrate the upload of all three required scans
   const handleUploadAndAnalyze = async () => {
     if (!selectedPatientId) return setUploadError("Please select a patient first.");
+    if (!selectedVisitId) return setUploadError("Please select a visit or create a new one.");
     if (!scans.upper || !scans.lower || !scans.buccal) return setUploadError("Please select all 3 scans.");
 
     setUploading(true);
@@ -42,27 +62,29 @@ function Dashboard({ onAnalyze }) {
 
     try {
       setUploadProgress("Aligning medical visit routing context...");
-      const fullPatient = await getPatient(selectedPatientId);
-
+      
       let targetVisitId = null;
-      if (fullPatient.visits && fullPatient.visits.length > 0) {
-          if (uploadMode === "new") {
-              setUploadProgress("Creating new visit...");
-              const visitCount = fullPatient.visits.length + 1;
-              const newVisit = await createVisit(selectedPatientId, `Visit ${visitCount}`, fullPatient.treatment_status || "Active");
-              targetVisitId = newVisit.id;
-          } else {
-              targetVisitId = fullPatient.visits[fullPatient.visits.length - 1].id;
-          }
+
+      // Fix 1: Handle explicit visit selection or new creation
+      if (selectedVisitId === "new") {
+          setUploadProgress("Creating new progress visit record...");
+          const newVisit = await createVisit(
+            selectedPatientId, 
+            `Follow-up Analysis (${new Date().toLocaleDateString()})`, 
+            "In-Progress"
+          );
+          targetVisitId = newVisit.id;
+      } else if (selectedVisitId) {
+          targetVisitId = selectedVisitId;
       } else {
-        // BACKWARD COMPATIBILITY: Auto-generate a Visit if an older Patient lacks one!
-        setUploadProgress("Legacy Patient detected. Auto-generating Initial Visit array...");
-        const newVisit = await createVisit(selectedPatientId, "Auto-generated Initial Appointment", "Pre-Treatment");
+        // BACKWARD COMPATIBILITY: Auto-generate a Visit if a legacy Patient lacks one
+        setUploadProgress("Legacy Patient detected. Auto-generating Initial Visit...");
+        const newVisit = await createVisit(selectedPatientId, "Initial Appointment", "Pre-Treatment");
         targetVisitId = newVisit.id;
       }
-
+      
       if (!targetVisitId) {
-        throw new Error("Unable to establish a secure Visit context string.");
+          throw new Error("Unable to establish a secure Visit context string.");
       }
 
       // Sequentially upload each model segment to the selected visit bucket
@@ -104,53 +126,49 @@ function Dashboard({ onAnalyze }) {
         </div>
 
         {/* Step 1: Patient Selection Box */}
-        <div className="dashboard-section-wrap">
-          <label className="dashboard-label">
-            1. Select Patient
-          </label>
-          <select
-            className="search-input dashboard-select"
-            value={selectedPatientId}
-            onChange={e => setSelectedPatientId(e.target.value)}
-            disabled={uploading}
-          >
-            <option value="">-- Choose a patient --</option>
-            {patients.map(p => (
-              <option key={p.id} value={p.id}>{p.name} (ID: {p.id.split("-")[0]})</option>
-            ))}
-          </select>
-          {selectedPatientId && (
-            <div style={{ display: "flex", gap: 16, marginTop: 12 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer", color: C.text }}>
-                <input 
-                  type="radio" 
-                  name="uploadMode" 
-                  value="new" 
-                  checked={uploadMode === "new"} 
-                  onChange={() => setUploadMode("new")}
-                  disabled={uploading}
-                />
-                Create New Visit
-              </label>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer", color: C.text }}>
-                <input 
-                  type="radio" 
-                  name="uploadMode" 
-                  value="overwrite" 
-                  checked={uploadMode === "overwrite"} 
-                  onChange={() => setUploadMode("overwrite")}
-                  disabled={uploading}
-                />
-                Update Latest Visit
-              </label>
-            </div>
-          )}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+          <div className="dashboard-section-wrap">
+            <label className="dashboard-label">
+              1. Select Patient
+            </label>
+            <select 
+              className="search-input dashboard-select" 
+              value={selectedPatientId}
+              onChange={e => setSelectedPatientId(e.target.value)}
+              disabled={uploading}
+            >
+              <option value="">-- Choose a patient --</option>
+              {patients.map(p => (
+                <option key={p.id} value={p.id}>{p.name} (ID: {p.id.split("-")[0]})</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="dashboard-section-wrap">
+            <label className="dashboard-label">
+              2. Target Visit
+            </label>
+            <select 
+              className="search-input dashboard-select" 
+              value={selectedVisitId}
+              onChange={e => setSelectedVisitId(e.target.value)}
+              disabled={uploading || !selectedPatientId}
+              style={{ borderColor: selectedVisitId === "new" ? C.blue : "inherit" }}
+            >
+              {patientVisits.map((v, i) => (
+                <option key={v.id} value={v.id}>
+                  Visit {i + 1}: {new Date(v.visit_date).toLocaleDateString()} ({v.status})
+                </option>
+              ))}
+              <option value="new" style={{ fontWeight: "bold", color: C.blue }}>+ Record as New Progress Visit</option>
+            </select>
+          </div>
         </div>
 
-        {/* Step 2: Extracting STL Files via File Inputs */}
+        {/* Step 3: Extracting STL Files via File Inputs */}
         <div className="dashboard-section-wrap">
           <label className="dashboard-label">
-            2. Upload 3D Intraoral Scans
+            3. Upload 3D Intraoral Scans
           </label>
 
           <div className="scan-picker-list">

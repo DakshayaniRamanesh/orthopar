@@ -260,6 +260,11 @@ function AnalysisStudio({ patientId }) {
       };
 
       await saveManualScore(activeVisit.id, payload);
+      
+      // Refresh patient data to update local cache and visit list scores
+      const updatedPatient = await getPatient(patientId);
+      setPatient(updatedPatient);
+      
       setSavedMsg(true);
       setTimeout(() => setSavedMsg(false), 3000);
     } catch (err) {
