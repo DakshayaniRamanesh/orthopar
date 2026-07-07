@@ -21,6 +21,10 @@ NAMES_UPPER = ['L1D', 'L1M', 'L1Mid', 'L2D', 'L2M', 'L2Mid', 'L3M', 'L3Mid', 'L4
 
 NAMES_BUCCAL = ['LCover', 'OJ_LCP', 'OJ_UCP']
 
+# In-memory cache for loaded Keras models. 
+# NOTE: In a multi-worker ASGI deployment (e.g. Gunicorn with multiple uvicorn workers), 
+# this cache and lock are per-process. A model activation in one worker will NOT 
+# immediately invalidate the cache in other workers.
 _loaded_models_cache = {}
 _cached_model_dir = None
 _cache_lock = threading.Lock()
