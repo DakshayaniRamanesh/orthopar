@@ -1,8 +1,10 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, UUID, Float, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, UUID, Float, Boolean, Index
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from database import Base
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+from enum import Enum as PyEnum
 
 class User(Base):
     __tablename__ = "users"
@@ -127,3 +129,49 @@ class MLModel(Base):
     file_path = Column(String) 
     is_active = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+# ---------------------------------------------------------------------------
+# Audit helpers
+# ---------------------------------------------------------------------------
+
+class AuditStatus(str, PyEnum):
+    """Typed status values for AuditLog rows — avoids accidental string typos."""
+    SUCCESS = "success"
+    FAILURE = "failure"
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    # Stored as timezone-aware UTC so comparisons are unambiguous
+    timestamp   = Column(DateTime(timezone=True),
+                         default=lambda: datetime.now(timezone.utc),
+                         index=True)
+
+    # Who
+    user_id     = Column(Integer, ForeignKey("users.id"), nullable=True)
+    user_email  = Column(String, nullable=True)
+
+    # What
+    action      = Column(String, index=True)    # e.g. "PATIENT_CREATED"
+    entity_type = Column(String, nullable=True)  # e.g. "patient"
+    entity_id   = Column(String, nullable=True)  # UUID or int as string
+
+    # Outcome
+    status      = Column(String, default=AuditStatus.SUCCESS)
+    summary     = Column(String, nullable=True)
+    # JSONB: queryable server-side, e.g. WHERE details->>'patient_id' = '15'
+    details     = Column(JSONB, nullable=True)
+
+    # Request context
+    ip_address  = Column(String, nullable=True)
+    user_agent  = Column(String, nullable=True)
+    http_method = Column(String, nullable=True)  # "GET" | "POST" | ...
+    endpoint    = Column(String, nullable=True)   # e.g. "/api/analysis/scans"
+
+    # Composite index: covers the dominant query pattern
+    #   WHERE user_id = ? ORDER BY timestamp DESC LIMIT N
+    __table_args__ = (
+        Index("ix_audit_logs_user_id_timestamp", "user_id", timestamp.desc()),
+    )

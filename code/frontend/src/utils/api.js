@@ -171,3 +171,15 @@ export async function getReports() {
 export async function getPatientReport(patientId) {
   return request(`/api/analysis/patients/${patientId}/report`);
 }
+
+export async function getAuditLogs(params = {}) {
+  const query = new URLSearchParams();
+  if (params.action) query.append("action", params.action);
+  if (params.from_date) query.append("from_date", params.from_date);
+  if (params.to_date) query.append("to_date", params.to_date);
+  if (params.skip !== undefined) query.append("skip", params.skip);
+  if (params.limit !== undefined) query.append("limit", params.limit);
+  
+  return request(`/api/analysis/audit-logs?${query.toString()}`);
+}
+

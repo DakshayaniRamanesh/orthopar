@@ -1,7 +1,8 @@
 from pydantic import BaseModel, EmailStr, ConfigDict
-from typing import List, Optional
+from typing import List, Optional, Any
 from datetime import datetime
 from uuid import UUID
+from models import AuditStatus
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -155,3 +156,22 @@ class ReportResponse(ParScoreResponse):
     hospital_patient_id: Optional[str] = None
     visit_notes: Optional[str] = None
     visit_date: datetime
+
+
+class AuditLogResponse(BaseModel):
+    id: int
+    timestamp: datetime
+    user_id: Optional[int] = None
+    user_email: Optional[str] = None
+    action: str
+    entity_type: Optional[str] = None
+    entity_id: Optional[str] = None
+    status: AuditStatus
+    summary: Optional[str] = None
+    details: Optional[dict] = None   # JSONB -- arrives as a dict, no JSON.parse() needed
+    # Request context
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    http_method: Optional[str] = None
+    endpoint: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)

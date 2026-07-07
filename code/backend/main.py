@@ -1,9 +1,9 @@
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, Request, status, UploadFile, File
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from database import engine, Base, get_db
-import models, schemas, auth, storage, crud
+import models, schemas, auth, storage, crud, audit
 import os
 
 from app.routes import analysis
@@ -54,7 +54,7 @@ ALLOWED_EXTENSIONS = {".stl", ".obj"}
 
 # ---------------- REGISTER ----------------
 @app.post("/register")
-def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
+def register(user: schemas.UserCreate, request: Request, db: Session = Depends(get_db)):
 
     existing_user = db.query(models.User).filter(
         models.User.email == user.email
@@ -79,12 +79,27 @@ def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_user)
 
+    audit.record(
+        db, audit.USER_REGISTERED,
+        user_id=new_user.id,
+        user_email=new_user.email,
+        entity_type="user",
+        entity_id=str(new_user.id),
+        summary=f"New user registered: {new_user.email}",
+        details={
+            "full_name": new_user.full_name,
+            "hospital_name": new_user.hospital_name,
+            "specialty": new_user.specialty,
+        },
+        request=request,
+    )
+
     return {"message": "User registered successfully"}
 
 
 # ---------------- LOGIN ----------------
 @app.post("/login", response_model=schemas.Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Request = None, db: Session = Depends(get_db)):
     # OAuth2PasswordRequestForm has username and password fields
     # We are using email as the username
     db_user = db.query(models.User).filter(
@@ -92,6 +107,14 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     ).first()
 
     if not db_user or not auth.verify_password(form_data.password, db_user.hashed_password):
+        # Log the failure before raising so the audit entry is always written
+        audit.record(
+            db, audit.LOGIN_FAILURE,
+            user_email=form_data.username,
+            status=audit.AuditStatus.FAILURE,
+            summary=f"Failed login attempt for: {form_data.username}",
+            request=request,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -102,11 +125,22 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         data={"sub": db_user.email}
     )
 
+    audit.record(
+        db, audit.LOGIN_SUCCESS,
+        user_id=db_user.id,
+        user_email=db_user.email,
+        entity_type="user",
+        entity_id=str(db_user.id),
+        summary=f"Login: {db_user.email}",
+        request=request,
+    )
+
     return {"access_token": access_token, "token_type": "bearer"}
 
 # ---------------- MODEL UPLOAD ----------------
 @app.post("/models/upload", response_model=schemas.ModelResponse)
 async def upload_model(
+    request: Request,
     file: UploadFile = File(...),
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
@@ -120,6 +154,15 @@ async def upload_model(
     # 1. Validate File Extension
     file_ext = os.path.splitext(file.filename)[1].lower()
     if file_ext not in ALLOWED_EXTENSIONS:
+        audit.record(
+            db, audit.MODEL_UPLOAD_FAILED,
+            user_id=current_user.id,
+            user_email=current_user.email,
+            status=audit.AuditStatus.FAILURE,
+            summary=f"Model upload failed: invalid extension '{file_ext}'",
+            details={"filename": file.filename, "reason": "invalid_extension"},
+            request=request,
+        )
         raise HTTPException(
             status_code=400, 
             detail=f"Invalid file type. Only {', '.join(ALLOWED_EXTENSIONS)} are allowed."
@@ -127,6 +170,15 @@ async def upload_model(
 
     # 2. Validate File Size (check headers first for early exit)
     if file.size and file.size > MAX_FILE_SIZE:
+        audit.record(
+            db, audit.MODEL_UPLOAD_FAILED,
+            user_id=current_user.id,
+            user_email=current_user.email,
+            status=audit.AuditStatus.FAILURE,
+            summary=f"Model upload failed: file too large ({file.size} bytes)",
+            details={"filename": file.filename, "size": file.size, "reason": "file_too_large"},
+            request=request,
+        )
         raise HTTPException(status_code=400, detail="File too large. Maximum size is 50MB.")
 
     try:
@@ -134,7 +186,7 @@ async def upload_model(
         model_id, file_path = await storage.storage_manager.save_file(file, current_user.id)
 
         # 4. Save metadata to Database
-        crud.save_model_metadata(
+        db_model = crud.save_model_metadata(
             db=db,
             user_id=current_user.id,
             model_id=model_id,
@@ -143,18 +195,52 @@ async def upload_model(
             file_type=file_ext.strip(".")
         )
 
+        audit.record(
+            db, audit.MODEL_UPLOADED,
+            user_id=current_user.id,
+            user_email=current_user.email,
+            entity_type="model",
+            entity_id=str(model_id),
+            summary=f"Model uploaded: {file.filename}",
+            details={
+                "model_id": str(model_id),
+                "file_name": file.filename,
+                "file_type": file_ext.strip("."),
+            },
+            request=request,
+        )
+
         return {
             "model_id": model_id,
             "file_name": file.filename,
             "status": "uploaded"
         }
 
-    except HTTPException:
+    except HTTPException as he:
+        audit.record(
+            db, audit.MODEL_UPLOAD_FAILED,
+            user_id=current_user.id,
+            user_email=current_user.email,
+            status=audit.AuditStatus.FAILURE,
+            summary=f"Model upload failed: HTTP {he.status_code}",
+            details={"filename": file.filename, "detail": he.detail},
+            request=request,
+        )
         raise
     except Exception as e:
+        audit.record(
+            db, audit.MODEL_UPLOAD_FAILED,
+            user_id=current_user.id,
+            user_email=current_user.email,
+            status=audit.AuditStatus.FAILURE,
+            summary=f"Model upload failed: unexpected error",
+            details={"filename": file.filename, "error": str(e)},
+            request=request,
+        )
         # Generic error handler
         print(f"Unexpected error during upload: {e}")
         raise HTTPException(status_code=500, detail="An unexpected error occurred during upload.")
+
 
 # ---------------- USER SETTINGS ----------------
 @app.get("/users/me", response_model=schemas.User)
@@ -162,7 +248,7 @@ def read_users_me(current_user: models.User = Depends(auth.get_current_user)):
     return current_user
 
 @app.put("/users/me", response_model=schemas.User)
-def update_user_me(user_update: schemas.UserUpdate, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+def update_user_me(user_update: schemas.UserUpdate, request: Request, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
     if user_update.full_name is not None: current_user.full_name = user_update.full_name
     if user_update.hospital_name is not None: current_user.hospital_name = user_update.hospital_name
     if user_update.slmc_registration_number is not None: current_user.slmc_registration_number = user_update.slmc_registration_number
@@ -170,14 +256,33 @@ def update_user_me(user_update: schemas.UserUpdate, current_user: models.User = 
     if user_update.phone_number is not None: current_user.phone_number = user_update.phone_number
     db.commit()
     db.refresh(current_user)
+    audit.record(
+        db, audit.PROFILE_UPDATED,
+        user_id=current_user.id,
+        user_email=current_user.email,
+        entity_type="user",
+        entity_id=str(current_user.id),
+        summary=f"Profile updated: {current_user.email}",
+        details=user_update.model_dump(exclude_none=True),
+        request=request,
+    )
     return current_user
 
 @app.put("/users/me/password")
-def update_user_password(pass_update: schemas.UserPasswordUpdate, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+def update_user_password(pass_update: schemas.UserPasswordUpdate, request: Request, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
     if not auth.verify_password(pass_update.current_password, current_user.hashed_password):
         raise HTTPException(status_code=400, detail="Incorrect current password")
     current_user.hashed_password = auth.hash_password(pass_update.new_password)
     db.commit()
+    audit.record(
+        db, audit.PASSWORD_CHANGED,
+        user_id=current_user.id,
+        user_email=current_user.email,
+        entity_type="user",
+        entity_id=str(current_user.id),
+        summary=f"Password changed: {current_user.email}",
+        request=request,
+    )
     return {"message": "Password updated successfully"}
 
 # TODO: Migrate seed_uploads.py dev utility once E2E verification passes

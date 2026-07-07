@@ -5,6 +5,7 @@ import PatientsPage from './pages/PatientsPage';
 import ReportsPage from './pages/ReportsPage';
 import SettingsPage from './pages/SettingsPage';
 import AuthPage from './pages/AuthPage';
+import AuditTrailPage from './pages/AuditTrailPage';
 import { useAuth } from './context/AuthContext.jsx';
 import { C, STATUS_COLORS } from "./utils/constants.js";
 import { Icons } from "./utils/components.jsx";
@@ -63,6 +64,7 @@ export default function App() {
     { id: "dashboard", label: "Dashboard", icon: Icons.home },
     { id: "studio", label: "Analysis Studio", icon: Icons.scan },
     { id: "patients", label: "Patients", icon: Icons.patients },
+    { id: "audit", label: "Audit Trail", icon: Icons.reports },
   ];
 
   const handleAnalyze = (patientId) => {
@@ -84,6 +86,7 @@ export default function App() {
     patients: { title: "Patients", sub: "All patient records" },
     reports: { title: "Patient Report", sub: reportPatientId ? "Trend analysis & visit history" : "Select a patient to view their report" },
     settings: { title: "Settings", sub: "Account & preferences" },
+    audit: { title: "Audit Trail", sub: "Secure append-only clinicians activity logs" },
   };
 
   return (
@@ -181,6 +184,11 @@ export default function App() {
             />
           )}
           {screen === "settings" && <SettingsPage />}
+          {screen === "audit" && (
+            <div className="fade-in" style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+              <AuditTrailPage />
+            </div>
+          )}
         </div>
       </div>
     </>
