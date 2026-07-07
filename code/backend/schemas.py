@@ -154,6 +154,13 @@ class MLModelResponse(MLModelBase):
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
+class MLModelActiveResponse(BaseModel):
+    name: str
+    version: str
+
+    class Config:
+        from_attributes = True
+
 class ReportResponse(ParScoreResponse):
     patient_name: str
     patient_id: UUID

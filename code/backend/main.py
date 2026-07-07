@@ -228,6 +228,20 @@ async def upload_ml_model(
     )
     return crud.create_ml_model(db, ml_model_data.model_dump())
 
+@app.get("/api/ml-models/active", response_model=schemas.MLModelActiveResponse)
+def get_active_model(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Get the currently active model (name and version only).
+    Available to any authenticated clinician.
+    """
+    model = db.query(models.MLModel).filter(models.MLModel.is_active == True).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="No active model found")
+    return model
+
 @app.put("/api/ml-models/{model_id}/activate", response_model=schemas.MLModelResponse)
 def activate_ml_model(
     model_id: str,

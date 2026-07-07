@@ -5,6 +5,7 @@ import PatientsPage from './pages/PatientsPage';
 import ReportsPage from './pages/ReportsPage';
 import SettingsPage from './pages/SettingsPage';
 import AuthPage from './pages/AuthPage';
+import AdminPage from './pages/AdminPage';
 import { useAuth } from './context/AuthContext.jsx';
 import { C, STATUS_COLORS } from "./utils/constants.js";
 import { Icons } from "./utils/components.jsx";
@@ -65,6 +66,10 @@ export default function App() {
     { id: "patients", label: "Patients", icon: Icons.patients },
   ];
 
+  if (user.is_admin) {
+    navItems.push({ id: "admin", label: "Model Admin", icon: Icons.settings }); // Using settings icon for now as a fallback
+  }
+
   const handleAnalyze = (patientId) => {
     setActivePatientId(patientId);
     setScreen("studio");
@@ -84,6 +89,7 @@ export default function App() {
     patients: { title: "Patients", sub: "All patient records" },
     reports: { title: "Patient Report", sub: reportPatientId ? "Trend analysis & visit history" : "Select a patient to view their report" },
     settings: { title: "Settings", sub: "Account & preferences" },
+    admin: { title: "Model Management", sub: "Manage PAR index ML models" },
   };
 
   return (
@@ -181,6 +187,7 @@ export default function App() {
             />
           )}
           {screen === "settings" && <SettingsPage />}
+          {screen === "admin" && user.is_admin && <AdminPage />}
         </div>
       </div>
     </>
