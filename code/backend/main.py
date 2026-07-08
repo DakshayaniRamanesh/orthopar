@@ -137,6 +137,67 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Request = N
 
     return {"access_token": access_token, "token_type": "bearer"}
 
+# ---------------- GOOGLE OAUTH ----------------
+@app.post("/auth/google", response_model=schemas.Token)
+def google_auth(payload: schemas.GoogleAuthRequest, request: Request, db: Session = Depends(get_db)):
+    """
+    Verify Google ID token, find-or-create user, return internal JWT.
+    """
+    # 1. Verify the Google ID token using google-auth library
+    google_info = auth.verify_google_token(payload.id_token)
+    
+    # 2. Find existing user by google_id or email
+    user = db.query(models.User).filter(
+        (models.User.google_id == google_info["sub"]) |
+        (models.User.email == google_info["email"])
+    ).first()
+
+    is_new_user = False
+    if user:
+        # Link Google ID if user exists by email but hasn't used Google before
+        if not user.google_id:
+            user.google_id = google_info["sub"]
+            db.commit()
+    else:
+        # 3. Create new user from Google profile
+        is_new_user = True
+        user = models.User(
+            email=google_info["email"],
+            full_name=google_info.get("name", ""),
+            auth_provider="google",
+            google_id=google_info["sub"],
+            hashed_password=None,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        audit.record(
+            db, audit.USER_REGISTERED,
+            user_id=user.id,
+            user_email=user.email,
+            entity_type="user",
+            entity_id=str(user.id),
+            summary=f"New user registered via Google: {user.email}",
+            details={"full_name": user.full_name, "provider": "google"},
+            request=request,
+        )
+
+    # 4. Issue internal JWT
+    access_token = auth.create_access_token(data={"sub": user.email})
+    
+    audit.record(
+        db, audit.LOGIN_SUCCESS,
+        user_id=user.id,
+        user_email=user.email,
+        entity_type="user",
+        entity_id=str(user.id),
+        summary=f"Google Login: {user.email}",
+        request=request,
+    )
+
+    return {"access_token": access_token, "token_type": "bearer"}
+
 # ---------------- MODEL UPLOAD ----------------
 @app.post("/models/upload", response_model=schemas.ModelResponse)
 async def upload_model(

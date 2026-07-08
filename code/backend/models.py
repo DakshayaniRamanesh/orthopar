@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, UUID, Float, Boolean, Index
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, UUID, Float, Boolean, Index, JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from database import Base
@@ -12,7 +12,9 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True)
     full_name = Column(String)
-    hashed_password = Column(String)
+    hashed_password = Column(String, nullable=True) # Nullable for Google users
+    auth_provider = Column(String, default="local") # "local" or "google"
+    google_id = Column(String, unique=True, index=True, nullable=True)
     
     # Clinical Affiliation Data
     hospital_name = Column(String, nullable=True)
@@ -164,8 +166,8 @@ class AuditLog(Base):
     # Outcome
     status      = Column(String, default=AuditStatus.SUCCESS)
     summary     = Column(String, nullable=True)
-    # JSONB: queryable server-side, e.g. WHERE details->>'patient_id' = '15'
-    details     = Column(JSONB, nullable=True)
+    # JSON/JSONB: queryable server-side in postgres, e.g. WHERE details->>'patient_id' = '15'
+    details     = Column(JSON().with_variant(JSONB, 'postgresql'), nullable=True)
 
     # Request context
     ip_address  = Column(String, nullable=True)

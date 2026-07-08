@@ -163,8 +163,19 @@ export default function ThreeViewer({ showUpper, showLower, showBuccal = true, s
         <directionalLight position={[10, 10, 5]} intensity={1} castShadow />
         <directionalLight position={[-10, 10, -5]} intensity={0.5} />
 
-                    {/* Render pre-calculated Backend AI landmarks mapped dynamically to geometric bounds */}
-                    {highlightLandmarks && scans.map(s => {
+        <Center>
+          <group rotation={[-Math.PI / 2, 0, 0]} scale={[0.1, 0.1, 0.1]}>
+            <JawModel
+              showUpper={effUpper}
+              showLower={effLower}
+              showBuccal={effBuccal}
+              onAddLandmark={handlePointerDown}
+              scans={scans}
+              onBoundsLoad={handleBoundsLoad}
+            />
+
+            {/* Render pre-calculated Backend AI landmarks mapped dynamically to geometric bounds */}
+            {highlightLandmarks && scans.map(s => {
                         if (s.file_type === "Upper Arch Segment" && !effUpper) return null;
                         if (s.file_type === "Lower Arch Segment" && !effLower) return null;
                         if (s.file_type === "Buccal Segment" && !effBuccal) return null;
@@ -238,9 +249,9 @@ export default function ThreeViewer({ showUpper, showLower, showBuccal = true, s
                 />
             )}
 
-            <OrbitControls 
-                enableDamping 
-                dampingFactor={0.05} 
+            <OrbitControls
+                enableDamping
+                dampingFactor={0.05}
                 maxDistance={20}
                 minDistance={2}
                 mouseButtons={{
@@ -248,29 +259,7 @@ export default function ThreeViewer({ showUpper, showLower, showBuccal = true, s
                     MIDDLE: THREE.MOUSE.PAN,
                     RIGHT: THREE.MOUSE.PAN
                 }}
-              if (s.file_type === "Buccal Segment" && !effBuccal) return null;
-              if (!s.landmarks || s.landmarks.length === 0) return null;
-          <Line
-            points={[
-              [measurePoints[0].x, measurePoints[0].y, measurePoints[0].z],
-              [measurePoints[1].x, measurePoints[1].y, measurePoints[1].z]
-            ]}
-            color="#3B82F6"
-            lineWidth={3}
-          />
-        )}
-
-        <OrbitControls
-          enableDamping
-          dampingFactor={0.05}
-          maxDistance={20}
-          minDistance={2}
-          mouseButtons={{
-            LEFT: THREE.MOUSE.ROTATE,
-            MIDDLE: THREE.MOUSE.PAN,
-            RIGHT: THREE.MOUSE.PAN
-          }}
-        />
+            />
       </Canvas>
 
       {landmarks.length > 0 && (

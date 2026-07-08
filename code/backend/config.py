@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     AWS_S3_BUCKET_NAME: str = os.getenv("AWS_S3_BUCKET_NAME", "orthoapp-scans")
 
+    # Google OAuth
+    GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
+
     class Config:
         env_file = ".env"
         extra = "ignore"

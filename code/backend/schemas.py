@@ -17,6 +17,7 @@ class User(BaseModel):
     id: int
     email: EmailStr
     full_name: str
+    auth_provider: str
     hospital_name: Optional[str] = None
     slmc_registration_number: Optional[str] = None
     specialty: Optional[str] = None
@@ -28,6 +29,9 @@ class User(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str
+
+class GoogleAuthRequest(BaseModel):
+    id_token: str
 
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None

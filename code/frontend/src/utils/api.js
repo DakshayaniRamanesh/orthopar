@@ -47,6 +47,24 @@ export async function login(email, password) {
   return data;
 }
 
+export async function googleAuth(idToken) {
+  const res = await fetch(`${BASE_URL}/auth/google`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id_token: idToken }),
+  });
+
+  if (!res.ok) {
+    let detail = "Google authentication failed";
+    try { detail = (await res.json()).detail || detail; } catch {}
+    throw new Error(detail);
+  }
+
+  const data = await res.json();
+  localStorage.setItem("orthopar_token", data.access_token);
+  return data;
+}
+
 export async function register(email, fullName, password, hospitalName, slmcRegistrationNumber, specialty, phoneNumber) {
   return request("/register", {
     method: "POST",

@@ -5,6 +5,7 @@ import PatientsPage from './pages/PatientsPage';
 import ReportsPage from './pages/ReportsPage';
 import SettingsPage from './pages/SettingsPage';
 import AuthPage from './pages/AuthPage';
+import CompleteProfile from './pages/CompleteProfile';
 import AuditTrailPage from './pages/AuditTrailPage';
 import AdminPage from './pages/AdminPage';
 import { useAuth } from './context/AuthContext.jsx';
@@ -54,6 +55,12 @@ export default function App() {
 
   // Not authenticated — show auth page
   if (!user) return <AuthPage />;
+
+  // Needs profile completion
+  const needsProfileCompletion = user.auth_provider === 'google' && (!user.hospital_name || !user.slmc_registration_number);
+  if (needsProfileCompletion && screen !== 'settings') {
+     return <CompleteProfile onComplete={() => setScreen("dashboard")} />;
+  }
 
   // Derive initials and display name from real user
   const initials = user.full_name
