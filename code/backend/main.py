@@ -183,7 +183,10 @@ async def upload_model(
 
     try:
         # 3. Save file locally
-        model_id, file_path = await storage.storage_manager.save_file(file, current_user.id)
+        import uuid
+        file_content = await file.read()
+        model_id = uuid.uuid4()
+        file_path = await storage.storage_manager.save_file(file_content, file.filename, str(current_user.id))
 
         # 4. Save metadata to Database
         db_model = crud.save_model_metadata(

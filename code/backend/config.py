@@ -10,14 +10,18 @@ class Settings(BaseSettings):
     # Database URL
     DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost/tabelname")
 
+    # Storage Backend: "s3" to use AWS S3, "local" to use local filesystem
+    STORAGE_BACKEND: str = os.getenv("STORAGE_BACKEND", "local")
+
     # AWS/Clinical Settings (from ML branch)
     AWS_ACCESS_KEY_ID: str = os.getenv("AWS_ACCESS_KEY_ID", "your_access_key")
     AWS_SECRET_ACCESS_KEY: str = os.getenv("AWS_SECRET_ACCESS_KEY", "your_secret_key")
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
-    S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "orthoapp-scans")
+    AWS_S3_BUCKET_NAME: str = os.getenv("AWS_S3_BUCKET_NAME", "orthoapp-scans")
 
     class Config:
         env_file = ".env"
+        extra = "ignore"
 
 settings = Settings()
 

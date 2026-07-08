@@ -271,7 +271,7 @@ function Dashboard({ onAnalyze }) {
           };
 
           return (
-            <div key={p.id} className="table-row" onClick={onAnalyze}>
+            <div key={p.id} className="table-row" onClick={() => onAnalyze(p.id)}>
               <div className="patient-id">{p.id}</div>
               <div style={{ fontSize: 13, color: C.textSub }}>
                 {new Date(p.created_at).toLocaleDateString()}

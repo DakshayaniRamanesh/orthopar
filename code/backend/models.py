@@ -80,6 +80,7 @@ class Scan(Base):
     visit_id = Column(UUID(as_uuid=True), ForeignKey("visits.id", ondelete="CASCADE"))
     file_type = Column(String)
     object_key = Column(String)  # AWS S3 Path or local path
+    status = Column(String, default="temp")  # "temp" = not yet persisted, "saved" = permanently stored
     uploaded_at = Column(DateTime, default=datetime.utcnow)
 
     visit = relationship("Visit", back_populates="scans")

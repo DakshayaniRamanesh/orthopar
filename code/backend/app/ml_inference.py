@@ -7,6 +7,7 @@ import threading
 from sqlalchemy.orm import Session
 import models
 from config import settings
+from storage import storage_manager, StorageBase
 
 # Names of landmarks as defined in the legacy ML training scripts
 NAMES_LOWER = ['L1D', 'L1M', 'L1Mid', 'L2D', 'L2M', 'L2Mid', 'L3M', 'L3Mid', 'L4BT', 'L4PT',
@@ -82,7 +83,11 @@ class MLService:
         return formatted
 
     def predict_landmarks(self, scan_path, file_type):
-        """Run ML inference on a given scan based on its type."""
+        """
+        Run ML inference on a given scan based on its type.
+        Supports both local file paths and S3 object keys — S3 files are
+        downloaded to a temp location automatically.
+        """
         if not self.active_model_record:
             raise Exception("No active ML model found in database.")
 
@@ -110,22 +115,32 @@ class MLService:
         if not os.path.exists(full_model_path):
             raise FileNotFoundError(f"Model file not found: {full_model_path}")
 
-        # Use in-memory cache to avoid slow reloading
-        global _loaded_models_cache, _cached_model_dir, _cache_lock
-        with _cache_lock:
-            if _cached_model_dir != model_dir:
-                _loaded_models_cache.clear()
-                _cached_model_dir = model_dir
-                
-            if file_type not in _loaded_models_cache:
-                _loaded_models_cache[file_type] = tf.keras.models.load_model(full_model_path)
-                
-            model = _loaded_models_cache[file_type]
+        # Resolve scan file: download from S3 to temp if needed, otherwise use local path
+        is_s3 = StorageBase.is_s3_key(scan_path)
+        local_scan_path = storage_manager.download_to_temp(scan_path)
 
-        features = self._process_stl(scan_path)
-        # Use model() instead of model.predict() for better thread-safety and performance 
-        # on small batches when sharing a single Keras model instance across threads.
-        prediction = model(features, training=False).numpy()
-        
-        # Return formatted landmarks and the model version used
-        return self._format_prediction(prediction[0], names), self.active_model_record.version
+        try:
+            # Use in-memory cache to avoid slow reloading
+            global _loaded_models_cache, _cached_model_dir, _cache_lock
+            with _cache_lock:
+                if _cached_model_dir != model_dir:
+                    _loaded_models_cache.clear()
+                    _cached_model_dir = model_dir
+                    
+                if file_type not in _loaded_models_cache:
+                    _loaded_models_cache[file_type] = tf.keras.models.load_model(full_model_path)
+                    
+                model = _loaded_models_cache[file_type]
+
+            features = self._process_stl(local_scan_path)
+            # Use model() instead of model.predict() for better thread-safety and performance 
+            # on small batches when sharing a single Keras model instance across threads.
+            prediction = model(features, training=False).numpy()
+            
+            # Return formatted landmarks and the model version used
+            return self._format_prediction(prediction[0], names), self.active_model_record.version
+        finally:
+            # Clean up temp file only if we downloaded from S3
+            if is_s3 and os.path.exists(local_scan_path):
+                os.unlink(local_scan_path)
+
