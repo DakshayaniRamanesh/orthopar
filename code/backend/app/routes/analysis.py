@@ -3,15 +3,12 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from uuid import UUID
 from typing import List
-import boto3
-from botocore.exceptions import NoCredentialsError, ClientError
 import os
-import io
-import tempfile
 
 import schemas, models, auth
 from database import get_db
 from config import settings
+from storage import storage_manager
 from app.ml_inference import MLService
 from app.calculator import calculate_par_score
 
@@ -94,13 +91,6 @@ def get_visit(
 
 # ---------------- SCANS ----------------
 
-s3_client = boto3.client(
-    's3',
-    aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-    region_name=settings.AWS_REGION
-)
-
 @router.post("/scans", response_model=schemas.ScanResponse)
 async def upload_scan(
     visit_id: UUID, 
@@ -118,23 +108,10 @@ async def upload_scan(
         raise HTTPException(status_code=404, detail="Visit not found or unauthorized")
 
     patient_id_folder = str(visit.patient_id)
-    # 2. Try S3 first, fall back to local storage
-    object_key = ""
-    file_content = await file.read()
 
-    try:
-        s3_key = f"scans/{patient_id_folder}/{file.filename}"
-        s3_client.upload_fileobj(io.BytesIO(file_content), settings.S3_BUCKET_NAME, s3_key)
-        object_key = s3_key
-    except Exception:
-        # S3 unavailable — save locally instead
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        uploads_dir = os.path.join(base_dir, "uploads", patient_id_folder)
-        os.makedirs(uploads_dir, exist_ok=True)
-        local_path = os.path.join(uploads_dir, file.filename)
-        with open(local_path, "wb") as f:
-            f.write(file_content)
-        object_key = local_path
+    # 2. Save file via the unified storage manager to the temporary folder
+    file_content = await file.read()
+    object_key = await storage_manager.save_temp_file(file_content, file.filename, str(visit_id))
 
     # 3. Purge any existing scan record of this specific file_type for this visit
     db.query(models.Scan).filter(
@@ -143,12 +120,50 @@ async def upload_scan(
     ).delete()
     db.commit()
 
-    # 4. Save new reference in DB linked to visit
-    db_scan = models.Scan(visit_id=visit_id, file_type=file_type, object_key=object_key)
+    # 4. Save new reference in DB linked to visit as "temp"
+    db_scan = models.Scan(visit_id=visit_id, file_type=file_type, object_key=object_key, status="temp")
     db.add(db_scan)
     db.commit()
     db.refresh(db_scan)
     return db_scan
+
+@router.post("/scans/persist/{visit_id}", response_model=List[schemas.ScanResponse])
+async def persist_scans(
+    visit_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    # Verify visit belongs to user
+    visit = db.query(models.Visit).join(models.Patient).filter(
+        models.Visit.id == visit_id,
+        models.Patient.clinician_id == current_user.id
+    ).first()
+    if not visit:
+        raise HTTPException(status_code=404, detail="Visit not found or unauthorized")
+
+    # Find all temp scans for this visit
+    temp_scans = db.query(models.Scan).filter(
+        models.Scan.visit_id == visit_id,
+        models.Scan.status == "temp"
+    ).all()
+
+    patient_id_folder = str(visit.patient_id)
+    persisted_scans = []
+
+    for scan in temp_scans:
+        filename = os.path.basename(scan.object_key)
+        # Move file to permanent storage
+        new_key = await storage_manager.persist_file(scan.object_key, filename, patient_id_folder)
+        # Update scan record
+        scan.object_key = new_key
+        scan.status = "saved"
+        persisted_scans.append(scan)
+
+    db.commit()
+    for scan in persisted_scans:
+        db.refresh(scan)
+        
+    return persisted_scans
 
 @router.get("/scans/file/{scan_id}")
 def get_scan_file(
@@ -164,41 +179,25 @@ def get_scan_file(
         raise HTTPException(status_code=404, detail="Scan not found or unauthorized")
     
     object_key = scan.object_key
+    filename = os.path.basename(object_key)
 
-    # --- S3 path: stream the file directly from the bucket ---
-    if object_key.startswith("scans/"):
-        try:
-            s3_response = s3_client.get_object(
-                Bucket=settings.S3_BUCKET_NAME,
-                Key=object_key
-            )
-            filename = os.path.basename(object_key)
-            return StreamingResponse(
-                s3_response["Body"],
-                media_type="application/octet-stream",
-                headers={"Content-Disposition": f'attachment; filename="{filename}"'}
-            )
-        except ClientError as e:
-            error_code = e.response["Error"]["Code"]
-            if error_code == "NoSuchKey":
-                raise HTTPException(status_code=404, detail="STL file not found in S3")
-            raise HTTPException(status_code=500, detail=f"S3 error: {error_code}")
-        except NoCredentialsError:
-            raise HTTPException(status_code=500, detail="AWS credentials not configured")
+    # Use the unified storage manager to retrieve the file
+    file_data, is_stream = storage_manager.get_file(object_key)
 
-    # --- Local path fallback ---
-    file_path = object_key
-    if not os.path.isabs(file_path):
-        file_path = os.path.join(os.getcwd(), file_path)
-
-    if os.path.exists(file_path):
-        return FileResponse(
-            path=file_path,
+    if is_stream:
+        # S3 StreamingBody — stream directly to the client
+        return StreamingResponse(
+            file_data,
             media_type="application/octet-stream",
-            filename=os.path.basename(file_path)
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
         )
-    
-    raise HTTPException(status_code=404, detail="STL file not found on disk or in S3")
+    else:
+        # Local file path — serve via FileResponse
+        return FileResponse(
+            path=file_data,
+            media_type="application/octet-stream",
+            filename=filename
+        )
 
 # ---------------- LANDMARKS & ANALYSIS ----------------
 

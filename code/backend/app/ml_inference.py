@@ -6,6 +6,7 @@ import gzip
 from sqlalchemy.orm import Session
 import models
 from config import settings
+from storage import storage_manager, StorageBase
 
 # Names of landmarks as defined in the legacy ML training scripts
 NAMES_LOWER = ['L1D', 'L1M', 'L1Mid', 'L2D', 'L2M', 'L2Mid', 'L3M', 'L3Mid', 'L4BT', 'L4PT',
@@ -57,7 +58,11 @@ class MLService:
         return formatted
 
     def predict_landmarks(self, scan_path, file_type):
-        """Run ML inference on a given scan based on its type."""
+        """
+        Run ML inference on a given scan based on its type.
+        Supports both local file paths and S3 object keys — S3 files are
+        downloaded to a temp location automatically.
+        """
         if not self.active_model_record:
             raise Exception("No active ML model found in database.")
 
@@ -85,10 +90,20 @@ class MLService:
         if not os.path.exists(full_model_path):
             raise FileNotFoundError(f"Model file not found: {full_model_path}")
 
-        # Load model, process STL, and predict
-        model = tf.keras.models.load_model(full_model_path)
-        features = self._process_stl(scan_path)
-        prediction = model.predict(features)
-        
-        # Return formatted landmarks and the model version used
-        return self._format_prediction(prediction[0], names), self.active_model_record.version
+        # Resolve scan file: download from S3 to temp if needed, otherwise use local path
+        is_s3 = StorageBase.is_s3_key(scan_path)
+        local_scan_path = storage_manager.download_to_temp(scan_path)
+
+        try:
+            # Load model, process STL, and predict
+            model = tf.keras.models.load_model(full_model_path)
+            features = self._process_stl(local_scan_path)
+            prediction = model.predict(features)
+            
+            # Return formatted landmarks and the model version used
+            return self._format_prediction(prediction[0], names), self.active_model_record.version
+        finally:
+            # Clean up temp file only if we downloaded from S3
+            if is_s3 and os.path.exists(local_scan_path):
+                os.unlink(local_scan_path)
+

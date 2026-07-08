@@ -128,18 +128,16 @@ export async function uploadScan(visitId, fileType, file) {
   const formData = new FormData();
   formData.append("file", file);
 
-  const res = await fetch(
-    `${BASE_URL}/api/analysis/scans?visit_id=${visitId}&file_type=${encodeURIComponent(fileType)}`,
-
-    {
-      method: "POST",
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-      body: formData,
-    }
-  );
+  const res = await fetch(`${BASE_URL}/api/analysis/scans?visit_id=${visitId}&file_type=${encodeURIComponent(fileType)}`, {
+    method: "POST",
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: formData,
+  });
 
   if (!res.ok) {
-    let detail = "Upload failed";
+    let detail = `Upload failed (${res.status})`;
     try { detail = (await res.json()).detail || detail; } catch {}
     throw new Error(detail);
   }
