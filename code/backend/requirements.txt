@@ -9,21 +9,15 @@ pydantic>=2.9.0
 
 # Database
 sqlalchemy==2.0.46
-alembic==1.12.1
 psycopg2-binary
-psycopg[binary]
 pydantic-settings>=2.5.0
 
 # ML & 3D Processing
 tensorflow-cpu>=2.15.0
 trimesh==4.0.5
 numpy==1.26.2
-scipy==1.11.4
-gzip-reader==0.1.0
 
 # Utilities
-python-dotenv==1.2.1
 aiofiles==24.1.0
 boto3==1.33.13
-setuptools
 google-auth>=2.22.0
