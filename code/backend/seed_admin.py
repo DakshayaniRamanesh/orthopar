@@ -5,8 +5,8 @@ Run once after containers start:
     docker exec <backend_container> python seed_admin.py
 
 Reads from environment:
-    ADMIN_EMAIL    (default: admin@orthopar.local)
-    ADMIN_PASSWORD (default: Admin@1234  -- CHANGE IN PRODUCTION)
+    ADMIN_EMAIL    (optional; if not set, no admin will be created)
+    ADMIN_PASSWORD (required when ADMIN_EMAIL is set)
 
 Idempotent: safe to run multiple times, will skip if admin exists.
 """
@@ -21,16 +21,16 @@ from models import User, UserRole, AccountStatus
 from auth import hash_password
 from datetime import datetime, timezone
 
-ADMIN_EMAIL    = os.getenv("ADMIN_EMAIL",    "admin@orthopar.com")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Admin@1234")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 
 def seed():
     Base.metadata.create_all(bind=engine)
     db = next(get_db())
     try:
-        # Clean up legacy invalid local domain admins
-        db.query(User).filter(User.email == "admin@orthopar.local").delete()
-        db.commit()
+        if not ADMIN_EMAIL or not ADMIN_PASSWORD:
+            print("[seed_admin] No admin credentials configured. Skipping admin creation. Set ADMIN_EMAIL and ADMIN_PASSWORD to enable it.")
+            return
 
         existing = db.query(User).filter(User.email == ADMIN_EMAIL).first()
         if existing:
@@ -48,7 +48,6 @@ def seed():
         db.add(admin)
         db.commit()
         print(f"[seed_admin] Admin created successfully: {ADMIN_EMAIL}")
-        print(f"[seed_admin] IMPORTANT: Change the default password immediately!")
     except Exception as e:
         db.rollback()
         print(f"[seed_admin] ERROR: {e}")
