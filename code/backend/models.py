@@ -1,8 +1,26 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, UUID, Float, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, UUID, Float, Boolean, Index, JSON
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from database import Base
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+from enum import Enum as PyEnum
+
+
+# ---------------------------------------------------------------------------
+# User role & account-status enums
+# ---------------------------------------------------------------------------
+
+class UserRole(str, PyEnum):
+    ADMIN     = "admin"
+    CLINICIAN = "clinician"   # covers all 4 specialties (stored in specialty col)
+
+class AccountStatus(str, PyEnum):
+    PENDING  = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    DISABLED = "disabled"
+
 
 class User(Base):
     __tablename__ = "users"
@@ -10,15 +28,30 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True)
     full_name = Column(String)
-    hashed_password = Column(String)
+    hashed_password = Column(String, nullable=True) # Nullable for Google users
+    auth_provider = Column(String, default="local") # "local" or "google"
+    google_id = Column(String, unique=True, index=True, nullable=True)
     
     # Clinical Affiliation Data
     hospital_name = Column(String, nullable=True)
     slmc_registration_number = Column(String, nullable=True)
     specialty = Column(String, nullable=True)
     phone_number = Column(String, nullable=True)
+    is_admin = Column(Boolean, default=False)
 
-    models = relationship("Model", back_populates="owner")
+
+    # Role & Approval Workflow
+    role           = Column(String, default=UserRole.CLINICIAN, nullable=False)
+    account_status = Column(String, default=AccountStatus.PENDING, nullable=False)
+    approved_by    = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_at    = Column(DateTime(timezone=True), nullable=True)
+
+    # Timestamps
+    created_at    = Column(DateTime(timezone=True),
+                           default=lambda: datetime.now(timezone.utc))
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
+
+    models   = relationship("Model", back_populates="owner")
     patients = relationship("Patient", back_populates="clinician")
 
 class Model(Base):
@@ -76,6 +109,7 @@ class Scan(Base):
     visit_id = Column(UUID(as_uuid=True), ForeignKey("visits.id", ondelete="CASCADE"))
     file_type = Column(String)
     object_key = Column(String)  # AWS S3 Path or local path
+    status = Column(String, default="temp")  # "temp" = not yet persisted, "saved" = permanently stored
     uploaded_at = Column(DateTime, default=datetime.utcnow)
 
     visit = relationship("Visit", back_populates="scans")
@@ -127,3 +161,49 @@ class MLModel(Base):
     file_path = Column(String) 
     is_active = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+# ---------------------------------------------------------------------------
+# Audit helpers
+# ---------------------------------------------------------------------------
+
+class AuditStatus(str, PyEnum):
+    """Typed status values for AuditLog rows — avoids accidental string typos."""
+    SUCCESS = "success"
+    FAILURE = "failure"
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    # Stored as timezone-aware UTC so comparisons are unambiguous
+    timestamp   = Column(DateTime(timezone=True),
+                         default=lambda: datetime.now(timezone.utc),
+                         index=True)
+
+    # Who
+    user_id     = Column(Integer, ForeignKey("users.id"), nullable=True)
+    user_email  = Column(String, nullable=True)
+
+    # What
+    action      = Column(String, index=True)    # e.g. "PATIENT_CREATED"
+    entity_type = Column(String, nullable=True)  # e.g. "patient"
+    entity_id   = Column(String, nullable=True)  # UUID or int as string
+
+    # Outcome
+    status      = Column(String, default=AuditStatus.SUCCESS)
+    summary     = Column(String, nullable=True)
+    # JSON/JSONB: queryable server-side in postgres, e.g. WHERE details->>'patient_id' = '15'
+    details     = Column(JSON().with_variant(JSONB, 'postgresql'), nullable=True)
+
+    # Request context
+    ip_address  = Column(String, nullable=True)
+    user_agent  = Column(String, nullable=True)
+    http_method = Column(String, nullable=True)  # "GET" | "POST" | ...
+    endpoint    = Column(String, nullable=True)   # e.g. "/api/analysis/scans"
+
+    # Composite index: covers the dominant query pattern
+    #   WHERE user_id = ? ORDER BY timestamp DESC LIMIT N
+    __table_args__ = (
+        Index("ix_audit_logs_user_id_timestamp", "user_id", timestamp.desc()),
+    )

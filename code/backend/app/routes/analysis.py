@@ -1,17 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from uuid import UUID
-from typing import List
+from typing import List, Optional
+from datetime import datetime
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 import os
-import io
-import tempfile
 
-import schemas, models, auth
+import schemas, models, auth, audit
 from database import get_db
 from config import settings
+from storage import storage_manager
 from app.ml_inference import MLService
 from app.calculator import calculate_par_score
 
@@ -21,14 +21,31 @@ router = APIRouter(prefix="/analysis", tags=["Analysis"])
 
 @router.post("/patients", response_model=schemas.PatientResponse)
 def create_patient(
-    patient: schemas.PatientCreate, 
+    patient: schemas.PatientCreate,
+    request: Request,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user)
+    current_user: models.User = Depends(auth.get_current_approved_user)
 ):
     db_patient = models.Patient(clinician_id=current_user.id, **patient.model_dump())
     db.add(db_patient)
     db.commit()
     db.refresh(db_patient)
+
+    audit.record(
+        db, audit.PATIENT_CREATED,
+        user_id=current_user.id,
+        user_email=current_user.email,
+        entity_type="patient",
+        entity_id=str(db_patient.id),
+        summary=f"Patient created: {db_patient.name}",
+        details={
+            "patient_id": str(db_patient.id),
+            "name": db_patient.name,
+            "hospital_patient_id": db_patient.hospital_patient_id,
+        },
+        request=request,
+    )
+
     return db_patient
 
 @router.get("/patients", response_model=List[schemas.PatientResponse])
@@ -36,7 +53,7 @@ def get_patients(
     skip: int = 0, 
     limit: int = 100, 
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user)
+    current_user: models.User = Depends(auth.get_current_approved_user)
 ):
     # Only return patients for the current clinician
     patients = db.query(models.Patient).filter(models.Patient.clinician_id == current_user.id).offset(skip).limit(limit).all()
@@ -46,7 +63,7 @@ def get_patients(
 def get_patient(
     patient_id: UUID, 
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user)
+    current_user: models.User = Depends(auth.get_current_approved_user)
 ):
     patient = db.query(models.Patient).filter(
         models.Patient.id == patient_id,
@@ -60,9 +77,10 @@ def get_patient(
 
 @router.post("/visits", response_model=schemas.VisitResponse)
 def create_visit(
-    visit: schemas.VisitCreate, 
+    visit: schemas.VisitCreate,
+    request: Request,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user)
+    current_user: models.User = Depends(auth.get_current_approved_user)
 ):
     # Verify patient ownership
     patient = db.query(models.Patient).filter(
@@ -76,13 +94,29 @@ def create_visit(
     db.add(db_visit)
     db.commit()
     db.refresh(db_visit)
+
+    audit.record(
+        db, audit.VISIT_CREATED,
+        user_id=current_user.id,
+        user_email=current_user.email,
+        entity_type="visit",
+        entity_id=str(db_visit.id),
+        summary=f"Visit created for patient {visit.patient_id}",
+        details={
+            "visit_id": str(db_visit.id),
+            "patient_id": str(visit.patient_id),
+            "status": db_visit.status,
+        },
+        request=request,
+    )
+
     return db_visit
 
 @router.get("/visits/{visit_id}", response_model=schemas.VisitResponse)
 def get_visit(
     visit_id: UUID, 
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user)
+    current_user: models.User = Depends(auth.get_current_approved_user)
 ):
     visit = db.query(models.Visit).join(models.Patient).filter(
         models.Visit.id == visit_id,
@@ -94,20 +128,14 @@ def get_visit(
 
 # ---------------- SCANS ----------------
 
-s3_client = boto3.client(
-    's3',
-    aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-    region_name=settings.AWS_REGION
-)
-
 @router.post("/scans", response_model=schemas.ScanResponse)
 async def upload_scan(
-    visit_id: UUID, 
-    file_type: str, 
-    file: UploadFile = File(...), 
+    visit_id: UUID,
+    file_type: str,
+    request: Request,
+    file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user)
+    current_user: models.User = Depends(auth.get_current_approved_user)
 ):
     # 1. Verify visit exists and patient belongs to user
     visit = db.query(models.Visit).join(models.Patient).filter(
@@ -118,23 +146,10 @@ async def upload_scan(
         raise HTTPException(status_code=404, detail="Visit not found or unauthorized")
 
     patient_id_folder = str(visit.patient_id)
-    # 2. Try S3 first, fall back to local storage
-    object_key = ""
-    file_content = await file.read()
 
-    try:
-        s3_key = f"scans/{patient_id_folder}/{file.filename}"
-        s3_client.upload_fileobj(io.BytesIO(file_content), settings.S3_BUCKET_NAME, s3_key)
-        object_key = s3_key
-    except Exception:
-        # S3 unavailable — save locally instead
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        uploads_dir = os.path.join(base_dir, "uploads", patient_id_folder)
-        os.makedirs(uploads_dir, exist_ok=True)
-        local_path = os.path.join(uploads_dir, file.filename)
-        with open(local_path, "wb") as f:
-            f.write(file_content)
-        object_key = local_path
+    # 2. Save file via the unified storage manager to the temporary folder
+    file_content = await file.read()
+    object_key = await storage_manager.save_temp_file(file_content, file.filename, str(visit_id))
 
     # 3. Purge any existing scan record of this specific file_type for this visit
     db.query(models.Scan).filter(
@@ -143,18 +158,72 @@ async def upload_scan(
     ).delete()
     db.commit()
 
-    # 4. Save new reference in DB linked to visit
-    db_scan = models.Scan(visit_id=visit_id, file_type=file_type, object_key=object_key)
+    # 4. Save new reference in DB linked to visit as "temp"
+    db_scan = models.Scan(visit_id=visit_id, file_type=file_type, object_key=object_key, status="temp")
     db.add(db_scan)
     db.commit()
     db.refresh(db_scan)
+
+    audit.record(
+        db, audit.SCAN_UPLOADED,
+        user_id=current_user.id,
+        user_email=current_user.email,
+        entity_type="scan",
+        entity_id=str(db_scan.id),
+        summary=f"Scan uploaded ({file_type}) for visit {visit_id}",
+        details={
+            "scan_id": str(db_scan.id),
+            "visit_id": str(visit_id),
+            "file_type": file_type,
+        },
+        request=request,
+    )
+
     return db_scan
+
+@router.post("/scans/persist/{visit_id}", response_model=List[schemas.ScanResponse])
+async def persist_scans(
+    visit_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    # Verify visit belongs to user
+    visit = db.query(models.Visit).join(models.Patient).filter(
+        models.Visit.id == visit_id,
+        models.Patient.clinician_id == current_user.id
+    ).first()
+    if not visit:
+        raise HTTPException(status_code=404, detail="Visit not found or unauthorized")
+
+    # Find all temp scans for this visit
+    temp_scans = db.query(models.Scan).filter(
+        models.Scan.visit_id == visit_id,
+        models.Scan.status == "temp"
+    ).all()
+
+    patient_id_folder = str(visit.patient_id)
+    persisted_scans = []
+
+    for scan in temp_scans:
+        filename = os.path.basename(scan.object_key)
+        # Move file to permanent storage
+        new_key = await storage_manager.persist_file(scan.object_key, filename, patient_id_folder)
+        # Update scan record
+        scan.object_key = new_key
+        scan.status = "saved"
+        persisted_scans.append(scan)
+
+    db.commit()
+    for scan in persisted_scans:
+        db.refresh(scan)
+        
+    return persisted_scans
 
 @router.get("/scans/file/{scan_id}")
 def get_scan_file(
     scan_id: UUID, 
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user)
+    current_user: models.User = Depends(auth.get_current_approved_user)
 ):
     scan = db.query(models.Scan).join(models.Visit).join(models.Patient).filter(
         models.Scan.id == scan_id,
@@ -164,49 +233,34 @@ def get_scan_file(
         raise HTTPException(status_code=404, detail="Scan not found or unauthorized")
     
     object_key = scan.object_key
+    filename = os.path.basename(object_key)
 
-    # --- S3 path: stream the file directly from the bucket ---
-    if object_key.startswith("scans/"):
-        try:
-            s3_response = s3_client.get_object(
-                Bucket=settings.S3_BUCKET_NAME,
-                Key=object_key
-            )
-            filename = os.path.basename(object_key)
-            return StreamingResponse(
-                s3_response["Body"],
-                media_type="application/octet-stream",
-                headers={"Content-Disposition": f'attachment; filename="{filename}"'}
-            )
-        except ClientError as e:
-            error_code = e.response["Error"]["Code"]
-            if error_code == "NoSuchKey":
-                raise HTTPException(status_code=404, detail="STL file not found in S3")
-            raise HTTPException(status_code=500, detail=f"S3 error: {error_code}")
-        except NoCredentialsError:
-            raise HTTPException(status_code=500, detail="AWS credentials not configured")
+    # Use the unified storage manager to retrieve the file
+    file_data, is_stream = storage_manager.get_file(object_key)
 
-    # --- Local path fallback ---
-    file_path = object_key
-    if not os.path.isabs(file_path):
-        file_path = os.path.join(os.getcwd(), file_path)
-
-    if os.path.exists(file_path):
-        return FileResponse(
-            path=file_path,
+    if is_stream:
+        # S3 StreamingBody — stream directly to the client
+        return StreamingResponse(
+            file_data,
             media_type="application/octet-stream",
-            filename=os.path.basename(file_path)
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
         )
-    
-    raise HTTPException(status_code=404, detail="STL file not found on disk or in S3")
+    else:
+        # Local file path — serve via FileResponse
+        return FileResponse(
+            path=file_data,
+            media_type="application/octet-stream",
+            filename=filename
+        )
 
 # ---------------- LANDMARKS & ANALYSIS ----------------
 
 @router.post("/landmarks/extract/{scan_id}", response_model=List[schemas.LandmarkResponse])
 def extract_landmarks(
-    scan_id: UUID, 
+    scan_id: UUID,
+    request: Request,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user)
+    current_user: models.User = Depends(auth.get_current_approved_user)
 ):
     scan = db.query(models.Scan).join(models.Visit).join(models.Patient).filter(
         models.Scan.id == scan_id,
@@ -218,9 +272,24 @@ def extract_landmarks(
     ml_service = MLService(db)
     try:
         predicted_landmarks, model_version = ml_service.predict_landmarks(scan.object_key, scan.file_type)
+    except ValueError as ve:
+        raise HTTPException(status_code=422, detail=str(ve))
     except Exception as e:
+        audit.record(
+            db, audit.LANDMARK_EXTRACTION_FAILED,
+            user_id=current_user.id,
+            user_email=current_user.email,
+            entity_type="scan",
+            entity_id=str(scan_id),
+            status=audit.AuditStatus.FAILURE,
+            summary=f"Landmark extraction failed for scan {scan_id}: {e}",
+            details={"scan_id": str(scan_id), "error": str(e)},
+            request=request,
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
+    # Lock the scan row explicitly to prevent race conditions during concurrent recalculations
+    db.query(models.Scan).filter(models.Scan.id == scan_id).with_for_update().first()
     db.query(models.Landmark).filter(models.Landmark.scan_id == scan_id).delete()
     
     db_landmarks = []
@@ -230,13 +299,30 @@ def extract_landmarks(
         db_landmarks.append(db_lm)
         
     db.commit()
+
+    audit.record(
+        db, audit.LANDMARK_EXTRACTED,
+        user_id=current_user.id,
+        user_email=current_user.email,
+        entity_type="scan",
+        entity_id=str(scan_id),
+        summary=f"Landmarks extracted for scan {scan_id}",
+        details={
+            "scan_id": str(scan_id),
+            "landmark_count": len(db_landmarks),
+            "model_version": model_version,
+        },
+        request=request,
+    )
+
     return db_landmarks
 
 @router.post("/landmarks/calculate/{visit_id}", response_model=schemas.ParScoreResponse)
 def calculate_score_for_visit(
-    visit_id: UUID, 
+    visit_id: UUID,
+    request: Request,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user)
+    current_user: models.User = Depends(auth.get_current_approved_user)
 ):
     visit = db.query(models.Visit).join(models.Patient).filter(
         models.Visit.id == visit_id,
@@ -261,7 +347,18 @@ def calculate_score_for_visit(
     active_version = ml_service.active_model_record.version if ml_service.active_model_record else "manual"
 
     if not upper_points or not lower_points:
-         raise HTTPException(status_code=400, detail="Missing landmarks for upper or lower arch segments.")
+        audit.record(
+            db, audit.PAR_SCORE_FAILED,
+            user_id=current_user.id,
+            user_email=current_user.email,
+            entity_type="visit",
+            entity_id=str(visit_id),
+            status=audit.AuditStatus.FAILURE,
+            summary=f"PAR score calculation failed: missing upper/lower landmarks for visit {visit_id}",
+            details={"visit_id": str(visit_id), "reason": "missing_landmarks"},
+            request=request,
+        )
+        raise HTTPException(status_code=400, detail="Missing landmarks for upper or lower arch segments.")
 
     missing_segments = []
     if not buccal_points:
@@ -285,14 +382,34 @@ def calculate_score_for_visit(
     response = schemas.ParScoreResponse.model_validate(db_score)
     response.is_partial = len(missing_segments) > 0
     response.missing_segments = missing_segments
+
+    audit.record(
+        db, audit.PAR_SCORE_CALCULATED,
+        user_id=current_user.id,
+        user_email=current_user.email,
+        entity_type="par_score",
+        entity_id=str(db_score.id),
+        summary=f"PAR score {db_score.final_score} calculated for visit {visit_id}",
+        details={
+            "visit_id": str(visit_id),
+            "par_score_id": str(db_score.id),
+            "final_score": db_score.final_score,
+            "model_version": active_version,
+            "is_partial": response.is_partial,
+            "missing_segments": missing_segments,
+        },
+        request=request,
+    )
+
     return response
 
 @router.post("/scores/manual/{visit_id}", response_model=schemas.ParScoreResponse)
 def save_manual_score(
     visit_id: UUID,
     score_data: schemas.ParScoreBase,
+    request: Request,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user)
+    current_user: models.User = Depends(auth.get_current_approved_user)
 ):
     visit = db.query(models.Visit).join(models.Patient).filter(
         models.Visit.id == visit_id,
@@ -315,6 +432,22 @@ def save_manual_score(
     
     db.commit()
     db.refresh(db_score)
+
+    audit.record(
+        db, audit.MANUAL_SCORE_SAVED,
+        user_id=current_user.id,
+        user_email=current_user.email,
+        entity_type="par_score",
+        entity_id=str(db_score.id),
+        summary=f"Manual PAR score {score_data.final_score} saved for visit {visit_id}",
+        details={
+            "visit_id": str(visit_id),
+            "par_score_id": str(db_score.id),
+            "final_score": score_data.final_score,
+        },
+        request=request,
+    )
+
     return db_score
 
 # ---------------- PATIENT TREND REPORT ----------------
@@ -322,8 +455,9 @@ def save_manual_score(
 @router.get("/patients/{patient_id}/report")
 def get_patient_report(
     patient_id: UUID,
+    request: Request,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user)
+    current_user: models.User = Depends(auth.get_current_approved_user)
 ):
     """
     Returns a full patient report including:
@@ -338,6 +472,16 @@ def get_patient_report(
     ).first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found or unauthorized")
+
+    audit.record(
+        db, audit.REPORT_VIEWED,
+        user_id=current_user.id,
+        user_email=current_user.email,
+        entity_type="patient",
+        entity_id=str(patient_id),
+        summary=f"Report viewed for patient {patient.name} ({patient_id})",
+        request=request,
+    )
 
     # Build chronological visit list with scores
     visits_data = []
@@ -453,7 +597,7 @@ def get_patient_report(
 @router.get("/reports", response_model=List[schemas.ReportResponse])
 def get_reports(
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user)
+    current_user: models.User = Depends(auth.get_current_approved_user)
 ):
     results = db.query(
         models.ParScore, 
@@ -482,3 +626,45 @@ def get_reports(
         reports.append(report)
         
     return reports
+
+
+# ---------------- AUDIT LOGS ----------------
+
+@router.get("/audit-logs", response_model=List[schemas.AuditLogResponse])
+def get_audit_logs(
+    action: Optional[str] = None,
+    from_date: Optional[datetime] = None,
+    to_date: Optional[datetime] = None,
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_approved_user),
+):
+    """
+    Returns audit log entries for the authenticated user only.
+    Entries are returned newest-first.
+
+    Query params:
+      - action     (optional) filter by action string, e.g. PATIENT_CREATED
+      - from_date  (optional) ISO 8601 datetime lower bound (inclusive)
+      - to_date    (optional) ISO 8601 datetime upper bound (inclusive)
+      - skip       pagination offset (default 0)
+      - limit      page size, max recommended 100 (default 50)
+    """
+    query = db.query(models.AuditLog).filter(
+        models.AuditLog.user_id == current_user.id
+    )
+    if action:
+        query = query.filter(models.AuditLog.action.ilike(f"%{action}%"))
+    if from_date:
+        query = query.filter(models.AuditLog.timestamp >= from_date)
+    if to_date:
+        query = query.filter(models.AuditLog.timestamp <= to_date)
+
+    return (
+        query
+        .order_by(models.AuditLog.timestamp.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )

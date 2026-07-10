@@ -6,6 +6,7 @@ export default function SideBar() {
     { id: "analysis",  label: "Analysis Studio", initial: "A", path: "/analysis" },
     { id: "patients",  label: "Patients", initial: "P", path: "/patients" },
     { id: "reports",   label: "Reports", initial: "R", path: "/reports" },
+    { id: "audit",     label: "Audit Trail", initial: "U", path: "/audit" },
   ];
 
   return (

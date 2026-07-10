@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { login as apiLogin, register as apiRegister, getMe } from "../utils/api.js";
+import { login as apiLogin, register as apiRegister, getMe, googleAuth } from "../utils/api.js";
 import { useAuth } from "../context/AuthContext.jsx";
+import { GoogleLogin } from '@react-oauth/google';
 import { C } from "../utils/constants.js";
 import "./AuthPage.css";
 
@@ -41,17 +42,30 @@ export default function AuthPage() {
   const handleRegister = async (e) => {
     e.preventDefault();
     clearMessages();
-    if (!fullName.trim()) { setError("Full name is required."); return; }
     setLoading(true);
     try {
       await apiRegister(email, fullName, password, hospitalName, slmc, specialty, phone);
-      setSuccess("Account created! You can now log in.");
+      setSuccess("Registration submitted! Your account is pending administrator approval.");
       setTab("login");
       setFullName("");
       setPassword("");
       setHospitalName("");
       setSlmc("");
       setPhone("");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogleSuccess = async (credentialResponse) => {
+    clearMessages();
+    setLoading(true);
+    try {
+      await googleAuth(credentialResponse.credential);
+      const user = await getMe();
+      login(user);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -190,6 +204,19 @@ export default function AuthPage() {
               {loading ? "Please wait…" : tab === "login" ? "Sign In" : "Create Account"}
             </button>
           </form>
+
+          <div style={{ textAlign: 'center', margin: '20px 0', color: '#64748B', fontSize: '13px', position: 'relative' }}>
+            <div style={{ position: 'absolute', top: '50%', left: 0, right: 0, borderTop: '1px solid #E2E8F0' }}></div>
+            <span style={{ background: 'white', padding: '0 10px', position: 'relative', zIndex: 1 }}>OR</span>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'center' }}>
+             <GoogleLogin
+                onSuccess={handleGoogleSuccess}
+                onError={() => setError("Google Login Failed")}
+                text={tab === "login" ? "signin_with" : "signup_with"}
+             />
+          </div>
 
           <div className="auth-divider">
             By Team Nai Miris

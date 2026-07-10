@@ -1,7 +1,8 @@
 from pydantic import BaseModel, EmailStr, ConfigDict
-from typing import List, Optional
+from typing import List, Optional, Any
 from datetime import datetime
 from uuid import UUID
+from models import AuditStatus
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -12,19 +13,13 @@ class UserCreate(BaseModel):
     specialty: Optional[str] = None
     phone_number: Optional[str] = None
 
-class User(BaseModel):
-    id: int
-    email: EmailStr
-    full_name: str
-    hospital_name: Optional[str] = None
-    slmc_registration_number: Optional[str] = None
-    specialty: Optional[str] = None
-    phone_number: Optional[str] = None
-    model_config = ConfigDict(from_attributes=True)
 
 class Token(BaseModel):
     access_token: str
     token_type: str
+
+class GoogleAuthRequest(BaseModel):
+    id_token: str
 
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None
@@ -143,11 +138,21 @@ class MLModelBase(BaseModel):
     version: str
     is_active: bool = False
 
+class MLModelCreate(MLModelBase):
+    file_path: str
+
 class MLModelResponse(MLModelBase):
     id: UUID
     file_path: str
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+class MLModelActiveResponse(BaseModel):
+    name: str
+    version: str
+
+    class Config:
+        from_attributes = True
 
 class ReportResponse(ParScoreResponse):
     patient_name: str
@@ -155,3 +160,90 @@ class ReportResponse(ParScoreResponse):
     hospital_patient_id: Optional[str] = None
     visit_notes: Optional[str] = None
     visit_date: datetime
+
+
+class AuditLogResponse(BaseModel):
+    id: int
+    timestamp: datetime
+    user_id: Optional[int] = None
+    user_email: Optional[str] = None
+    action: str
+    entity_type: Optional[str] = None
+    entity_id: Optional[str] = None
+    status: AuditStatus
+    summary: Optional[str] = None
+    details: Optional[dict] = None   # JSONB -- arrives as a dict, no JSON.parse() needed
+    # Request context
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    http_method: Optional[str] = None
+    endpoint: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ---------------------------------------------------------------------------
+# Admin schemas
+# ---------------------------------------------------------------------------
+
+class User(BaseModel):
+    id: int
+    # Use plain string for returned email to avoid strict RFC checks
+    # (some local dev domains like `.local` are treated as reserved).
+    email: str
+    full_name: str
+    hospital_name: Optional[str] = None
+    slmc_registration_number: Optional[str] = None
+    specialty: Optional[str] = None
+    phone_number: Optional[str] = None
+    role: Optional[str] = "clinician"
+    account_status: Optional[str] = "approved"
+    created_at: Optional[datetime] = None
+    last_login_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserAdminSummary(BaseModel):
+    """Extended user view for admin user management table."""
+    id: int
+    email: str
+    full_name: str
+    role: str
+    account_status: str
+    specialty: Optional[str] = None
+    hospital_name: Optional[str] = None
+    slmc_registration_number: Optional[str] = None
+    phone_number: Optional[str] = None
+    created_at: Optional[datetime] = None
+    last_login_at: Optional[datetime] = None
+    approved_by: Optional[int] = None
+    approved_at: Optional[datetime] = None
+    action_count: int = 0
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserApprovalAction(BaseModel):
+    """Body for approve/reject/role-change actions."""
+    reason: Optional[str] = None  # Optional rejection reason
+
+
+class RoleChangeAction(BaseModel):
+    new_role: str  # "admin" or "clinician"
+    reason: Optional[str] = None
+
+
+class AdminStatsResponse(BaseModel):
+    total_users: int
+    pending_users: int
+    approved_users: int
+    rejected_users: int
+    disabled_users: int
+    total_audit_events: int
+    failed_logins_24h: int
+    approved_today: int
+
+
+class SecurityEventResponse(BaseModel):
+    email: str
+    ip_address: Optional[str] = None
+    failure_count: int
+    last_attempt: Optional[datetime] = None
